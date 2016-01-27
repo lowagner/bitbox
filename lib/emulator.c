@@ -62,10 +62,10 @@ static uint32_t next_time;
 int fullscreen; // shall run fullscreen
 int quiet;
 
-SDL_Window* window;
+SDL_Window* emu_window;
 //SDL_Surface* screen;
-SDL_Renderer* renderer;
-SDL_Texture* texture;
+SDL_Renderer* emu_renderer;
+SDL_Texture* emu_texture;
 uint16_t mybuffer1[LINE_BUFFER];
 uint16_t mybuffer2[LINE_BUFFER];
 uint16_t *draw_buffer = mybuffer1; // volatile ?
@@ -148,10 +148,10 @@ static void __attribute__ ((optimize("-O3"))) update_texture(SDL_Texture *txt)
         uint16_t *src = (uint16_t*) draw_buffer;
         uint16_t *dst;
         int pitch; 
-        SDL_LockTexture(texture, &draw_rect, (void**)&dst, &pitch);
+        SDL_LockTexture(emu_texture, &draw_rect, (void**)&dst, &pitch);
         for (int i=0;i<screen_width;i++)
             *dst++= *src++; //pixelconv(*src++);
-        SDL_UnlockTexture(texture);
+        SDL_UnlockTexture(emu_texture);
         
         draw_rect.y += 1;
         // swap lines buffers to simulate double line buffering
@@ -208,8 +208,8 @@ void set_mode(int width, int height)
     screen_width = width;
     screen_height = height;
     //screen = SDL_SetVideoMode(width,height, 16, SDL_HWSURFACE|SDL_DOUBLEBUF|(fullscreen?SDL_FULLSCREEN:0));
-    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB555, SDL_TEXTUREACCESS_STREAMING, width, height);
-    if ( !texture )
+    emu_texture = SDL_CreateTexture(emu_renderer, SDL_PIXELFORMAT_RGB555, SDL_TEXTUREACCESS_STREAMING, width, height);
+    if ( !emu_texture )
     {
         printf("%s\n",SDL_GetError());
         die(-1,0);
@@ -254,18 +254,18 @@ int init(void)
         return 1;
     }
     message("Making window %d by %d\n", VGA_H_PIXELS, VGA_V_PIXELS);
-    window = SDL_CreateWindow(
+    emu_window = SDL_CreateWindow(
          "This will surely be overwritten", 
          SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, VGA_H_PIXELS, VGA_V_PIXELS, 
          fullscreen ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_RESIZABLE
     );
-    if ( !window )
+    if ( !emu_window )
     {
         printf("%s\n",SDL_GetError());
         die(-1,0);
     }
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if ( !renderer )
+    emu_renderer = SDL_CreateRenderer(emu_window, -1, SDL_RENDERER_ACCELERATED);
+    if ( !emu_renderer )
     {
         printf("%s\n",SDL_GetError());
         die(-1,0);
@@ -396,6 +396,7 @@ static bool handle_gamepad()
 
         // check for keypresses
         case SDL_KEYDOWN:
+            message("sdl_event.key.keysym.sym = %d\n",sdl_event.key.keysym.sym);
             #ifndef DISABLE_ESC_EXIT
             if (sdl_event.key.keysym.sym == SDLK_ESCAPE)
                 return true; // quit now
@@ -410,7 +411,6 @@ static bool handle_gamepad()
                 user_button=1;
 
             // now create the keyboard event
-            message("sdl_event.key.keysym.sym = %d\n",sdl_event.key.keysym.sym);
             key = key_trans[sdl_event.key.keysym.sym];
             mod = sdl_event.key.keysym.mod;
             // printf("%x\n",sdl_event.key.keysym.sym );
@@ -423,6 +423,8 @@ static bool handle_gamepad()
 
         case SDL_KEYUP:
 
+            if (sdl_event.key.keysym.sym > 255)
+                return false;
             if (sdl_event.key.keysym.sym == USER_BUTTON_KEY)
                 user_button=0;
 
@@ -621,7 +623,7 @@ int button_state() {
 // user LED
 void set_led(int x) {
     printf("Setting LED to %d\n",x);
-    SDL_SetWindowTitle(window, x?WM_TITLE_LED_ON:WM_TITLE_LED_OFF);
+    SDL_SetWindowTitle(emu_window, x?WM_TITLE_LED_ON:WM_TITLE_LED_OFF);
 }
 
 int main ( int argc, char** argv )
@@ -668,10 +670,10 @@ int main ( int argc, char** argv )
         // update time
         vga_frame++;
 
-        update_texture(texture);
+        update_texture(emu_texture);
 
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
-        SDL_RenderPresent(renderer);
+        SDL_RenderCopy(emu_renderer, emu_texture, NULL, NULL);
+        SDL_RenderPresent(emu_renderer);
 
         SDL_Delay(time_left());
         next_time += slow ? TICK_INTERVAL*10:TICK_INTERVAL;
@@ -679,9 +681,9 @@ int main ( int argc, char** argv )
         //SDL_Flip(screen);
     } // end main loop
 
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    SDL_DestroyTexture(emu_texture);
+    SDL_DestroyRenderer(emu_renderer);
+    SDL_DestroyWindow(emu_window);
     SDL_Quit();
     // all is well ;)
     if (!quiet)
