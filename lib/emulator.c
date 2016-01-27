@@ -1,12 +1,12 @@
 #include <stdlib.h>
 
-#include <SDL/SDL.h>
+#include <SDL2/SDL.h>
 
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
- #include <errno.h>
+#include <errno.h>
 
 // emulated interfaces
 #include "bitbox.h"
@@ -62,7 +62,10 @@ static uint32_t next_time;
 int fullscreen; // shall run fullscreen
 int quiet;
 
-SDL_Surface* screen;
+SDL_Window* window;
+//SDL_Surface* screen;
+SDL_Renderer* renderer;
+SDL_Texture* texture;
 uint16_t mybuffer1[LINE_BUFFER];
 uint16_t mybuffer2[LINE_BUFFER];
 uint16_t *draw_buffer = mybuffer1; // volatile ?
@@ -123,14 +126,17 @@ static inline uint16_t pixelconv(uint16_t pixel)
 }
 
 
-static void __attribute__ ((optimize("-O3"))) refresh_screen(SDL_Surface *scr)
+static void __attribute__ ((optimize("-O3"))) update_texture(SDL_Texture *txt)
 // uses global line + vga_odd
 {
-    uint16_t *dst = (uint16_t*)scr->pixels;
-
     draw_buffer = mybuffer1;
     graph_frame();
 
+    SDL_Rect draw_rect;
+    draw_rect.x = 0;
+    draw_rect.y = 0;
+    draw_rect.w = screen_width;
+    draw_rect.h = 1;
     for (vga_line=0;vga_line<screen_height;vga_line++) {
         vga_odd=0;
         graph_line(); // using line, updating draw_buffer ...
@@ -140,10 +146,14 @@ static void __attribute__ ((optimize("-O3"))) refresh_screen(SDL_Surface *scr)
 
         // copy to screen at this position (cheating)
         uint16_t *src = (uint16_t*) draw_buffer;
-
+        uint16_t *dst;
+        int pitch; 
+        SDL_LockTexture(texture, &draw_rect, (void**)&dst, &pitch);
         for (int i=0;i<screen_width;i++)
-            *dst++= pixelconv(*src++);
-
+            *dst++= *src++; //pixelconv(*src++);
+        SDL_UnlockTexture(texture);
+        
+        draw_rect.y += 1;
         // swap lines buffers to simulate double line buffering
         draw_buffer = (draw_buffer == &mybuffer1[0] ) ? &mybuffer2[0] : &mybuffer1[0];
     }
@@ -197,13 +207,13 @@ void set_mode(int width, int height)
 {
     screen_width = width;
     screen_height = height;
-    screen = SDL_SetVideoMode(width,height, 16, SDL_HWSURFACE|SDL_DOUBLEBUF|(fullscreen?SDL_FULLSCREEN:0));
-    if ( !screen )
+    //screen = SDL_SetVideoMode(width,height, 16, SDL_HWSURFACE|SDL_DOUBLEBUF|(fullscreen?SDL_FULLSCREEN:0));
+    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB555, SDL_TEXTUREACCESS_STREAMING, width, height);
+    if ( !texture )
     {
         printf("%s\n",SDL_GetError());
         die(-1,0);
     }
-    SDL_WM_SetCaption(WM_TITLE_LED_OFF, "game");
 }
 
 
@@ -242,6 +252,23 @@ int init(void)
     {
         printf( "Unable to init SDL: %s\n", SDL_GetError() );
         return 1;
+    }
+    message("Making window %d by %d\n", VGA_H_PIXELS, VGA_V_PIXELS);
+    window = SDL_CreateWindow(
+         "This will surely be overwritten", 
+         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, VGA_H_PIXELS, VGA_V_PIXELS, 
+         fullscreen ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_RESIZABLE
+    );
+    if ( !window )
+    {
+        printf("%s\n",SDL_GetError());
+        die(-1,0);
+    }
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if ( !renderer )
+    {
+        printf("%s\n",SDL_GetError());
+        die(-1,0);
     }
     set_led(0); // off by default
 
@@ -373,6 +400,8 @@ static bool handle_gamepad()
             if (sdl_event.key.keysym.sym == SDLK_ESCAPE)
                 return true; // quit now
             #endif
+            if (sdl_event.key.keysym.sym > 255)
+                return false;
 
             /* note that this event WILL be propagated so on emulator
             you'll see both button and keyboard. It's ot really a problem since
@@ -381,10 +410,10 @@ static bool handle_gamepad()
                 user_button=1;
 
             // now create the keyboard event
-
-            key = key_trans[sdl_event.key.keysym.scancode];
+            message("sdl_event.key.keysym.sym = %d\n",sdl_event.key.keysym.sym);
+            key = key_trans[sdl_event.key.keysym.sym];
             mod = sdl_event.key.keysym.mod;
-            // printf("%x\n",sdl_event.key.keysym.scancode );
+            // printf("%x\n",sdl_event.key.keysym.sym );
             event_push((struct event){
                 .type= evt_keyboard_press,
                 .kbd={ .key=key,.mod=mod,.sym=kbd_map(mod,key) }
@@ -398,7 +427,7 @@ static bool handle_gamepad()
                 user_button=0;
 
             // now create the keyboard event
-            key = key_trans[sdl_event.key.keysym.scancode];
+            key = key_trans[sdl_event.key.keysym.sym];
             mod = sdl_event.key.keysym.mod;
             event_push((struct event){
                 .type= evt_keyboard_release,
@@ -592,7 +621,7 @@ int button_state() {
 // user LED
 void set_led(int x) {
     printf("Setting LED to %d\n",x);
-    SDL_WM_SetCaption(x?WM_TITLE_LED_ON:WM_TITLE_LED_OFF, "game");
+    SDL_SetWindowTitle(window, x?WM_TITLE_LED_ON:WM_TITLE_LED_OFF);
 }
 
 int main ( int argc, char** argv )
@@ -639,14 +668,21 @@ int main ( int argc, char** argv )
         // update time
         vga_frame++;
 
-        refresh_screen(screen);
+        update_texture(texture);
+
+        SDL_RenderCopy(renderer, texture, NULL, NULL);
+        SDL_RenderPresent(renderer);
 
         SDL_Delay(time_left());
         next_time += slow ? TICK_INTERVAL*10:TICK_INTERVAL;
 
-        SDL_Flip(screen);
+        //SDL_Flip(screen);
     } // end main loop
 
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
     // all is well ;)
     if (!quiet)
         printf(" - Exited cleanly\n");
